@@ -1,42 +1,4 @@
-"""
-Anomalous Sound Detection Pipeline — MIMII Dataset Edition
-============================================================
-Trains a 2D convolutional autoencoder on NORMAL machine-operating sounds
-from the MIMII dataset (Purohit et al., 2019, Hitachi) and flags anomalies
-via reconstruction error. Same core architecture as the original synthetic
-pipeline, but now reads real 10-second .wav recordings from disk.
 
---------------------------------------------------------------------------
-DATASET SETUP (one-time, do this on your own machine before running this
-script — Zenodo isn't reachable from every sandboxed environment):
-
-1. Download the MIMII zip(s) you want from Zenodo:
-       https://zenodo.org/record/3384388
-   Files are named like "6_dB_fan.zip", "0_dB_pump.zip", "-6_dB_valve.zip".
-   Pick one SNR level and one machine type to start (fan is the easiest).
-   (`download_mimii.py`, included alongside this file, automates this step.)
-
-2. Unzip it. You should end up with a layout like:
-
-       <data_root>/
-           fan/
-               id_00/
-                   normal/*.wav
-                   abnormal/*.wav
-               id_02/
-                   normal/*.wav
-                   abnormal/*.wav
-               id_04/...
-               id_06/...
-           pump/... (if you downloaded pump too)
-
-   This is the standard MIMII layout: <data_root>/<machine>/id_XX/{normal,abnormal}/*.wav
-
-3. Run:
-       python mimii_pipeline.py --data_root /path/to/data_root --machine fan
-
---------------------------------------------------------------------------
-"""
 import os
 import glob
 import argparse
@@ -57,8 +19,7 @@ np.random.seed(42)
 N_MELS = 128
 N_FFT = 1024
 HOP_LENGTH = 512
-FIXED_FRAMES = 128  # time axis is padded/cropped to this so the model's shape stays fixed
-                     # regardless of each clip's exact length
+FIXED_FRAMES = 128  
 
 
 def audio_to_mel_spectrogram(audio, sr=16000, n_mels=N_MELS, n_fft=N_FFT, hop_length=HOP_LENGTH):
@@ -198,7 +159,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 1. Discover real audio files
+    
     print(f"\nScanning MIMII files for machine='{args.machine}' under {args.data_root} ...")
     normal_files, abnormal_files = find_mimii_files(args.data_root, args.machine)
     print(f"Found {len(normal_files)} normal / {len(abnormal_files)} abnormal recordings.")
@@ -209,7 +170,7 @@ def main():
     val_files = normal_files[:n_val]
     train_files = normal_files[n_val:]
 
-    # 2. Extract Mel-Spectrogram features from real audio
+    
     print("\nExtracting Mel-Spectrograms from audio...")
     train_specs = specs_from_files(train_files, desc="train")
     val_specs = specs_from_files(val_files, desc="val")
@@ -222,12 +183,12 @@ def main():
     val_loader = DataLoader(AudioDataset(val_specs), batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(AudioDataset(test_specs), batch_size=1, shuffle=False)
 
-    # 3. Instantiate Model, Loss, Optimizer
+   
     model = ConvAutoencoder2D().to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
-    # 4. Train Model (strictly on normal data, unsupervised)
+    
     print("\nStarting Training (Unsupervised, normal sounds only)...")
     model.train()
     for epoch in range(args.epochs):
@@ -244,7 +205,8 @@ def main():
         epoch_loss = train_loss / len(train_loader.dataset)
         print(f"Epoch [{epoch + 1}/{args.epochs}] - Loss: {epoch_loss:.6f}")
 
-    # 5. Calculate Decision Threshold (mu + 3 * sigma rule) from held-out NORMAL data
+
+   
     model.eval()
     val_losses = []
     with torch.no_grad():
@@ -259,7 +221,7 @@ def main():
     threshold = mu_loss + (3 * sigma_loss)
     print(f"\nCalculated Anomaly Threshold (mu + 3*sigma): {threshold:.6f}")
 
-    # 6. Inference & Anomaly Flagging
+    
     test_losses = []
     with torch.no_grad():
         for batch in test_loader:
@@ -271,7 +233,7 @@ def main():
     test_losses = np.array(test_losses)
     predictions = (test_losses > threshold).astype(int)
 
-    # 7. Print Evaluation Metrics
+    
     print("\n================ Classification Report ================")
     print(classification_report(test_labels, predictions, target_names=["Normal (0)", "Anomalous (1)"]))
     print("Confusion Matrix:")
@@ -282,7 +244,7 @@ def main():
     except ValueError:
         pass  # only one class present in test set
 
-    # 8. Save the trained model
+   
     save_path = f"autoencoder_{args.machine}.pt"
     torch.save(model.state_dict(), save_path)
     print(f"\nModel saved to {save_path}")

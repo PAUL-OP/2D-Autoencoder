@@ -1,15 +1,4 @@
-"""
-Download + unzip one MIMII dataset split from Zenodo.
 
-Run this on your own machine (not inside a network-restricted sandbox —
-zenodo.org needs to be reachable). It just automates:
-    1. downloading "<snr>_dB_<machine>.zip" from Zenodo record 3384388
-    2. unzipping it into --out_dir
-
-Usage:
-    python download_mimii.py --machine fan --snr 6 --out_dir ./mimii_data
-    python mimii_pipeline.py --data_root ./mimii_data --machine fan
-"""
 import argparse
 import os
 import zipfile
