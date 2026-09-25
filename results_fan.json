@@ -1,0 +1,7 @@
+{
+    "machine": "fan",
+    "threshold": 0.0021031859796494246,
+    "mean_validation_loss": 0.001402042806148529,
+    "std_validation_loss": 0.00023371436691377312,
+    "roc_auc": 0.457750947817173
+}
