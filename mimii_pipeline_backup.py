@@ -104,20 +104,30 @@ class ConvAutoencoder2D(nn.Module):
 # ==========================================
 # 3. Real Dataset Loader (MIMII directory layout)
 # ==========================================
-def find_mimii_files(data_root, machine, machine_id=None):
-    normal_files = []
-    abnormal_files = []
+def find_mimii_files(data_root, machine, machine_ids=None):
+    """
+    Expects: <data_root>/<machine>/id_XX/{normal,abnormal}/*.wav
+    Returns two lists of file paths (not loaded into memory yet).
+    """
+    machine_dir = os.path.join(data_root, machine)
+    if not os.path.isdir(machine_dir):
+        raise FileNotFoundError(
+            f"Could not find '{machine_dir}'.\n"
+            f"Expected the MIMII layout: <data_root>/<machine>/id_XX/{{normal,abnormal}}/*.wav\n"
+            f"Check --data_root and --machine, and that you unzipped the download."
+        )
 
-    machine_root = os.path.join(data_root, machine)
+    id_dirs = sorted(glob.glob(os.path.join(machine_dir, "id_*")))
+    if machine_ids:
+        id_dirs = [d for d in id_dirs if os.path.basename(d) in machine_ids]
 
-    if machine_id:
-        id_dirs = [os.path.join(machine_root, machine_id)]
-    else:
-        id_dirs = sorted(glob.glob(os.path.join(machine_root, "id_*")))
-
+    normal_files, abnormal_files = [], []
     for id_dir in id_dirs:
-        normal_files.extend(glob.glob(os.path.join(id_dir, "normal", "*.wav")))
-        abnormal_files.extend(glob.glob(os.path.join(id_dir, "abnormal", "*.wav")))
+        normal_files += sorted(glob.glob(os.path.join(id_dir, "normal", "*.wav")))
+        abnormal_files += sorted(glob.glob(os.path.join(id_dir, "abnormal", "*.wav")))
+
+    if not normal_files:
+        raise FileNotFoundError(f"No normal/*.wav files found under {machine_dir}")
 
     return normal_files, abnormal_files
 
@@ -139,13 +149,11 @@ def main():
     parser.add_argument("--data_root", required=True,
                          help="Path to the unzipped MIMII folder that CONTAINS the <machine> subfolder")
     parser.add_argument("--machine", default="fan", choices=["fan", "pump", "slider", "valve"])
-    parser.add_argument("--machine_id", default=None)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val_frac", type=float, default=0.15,
                          help="Fraction of normal files held out to calibrate the anomaly threshold")
-    
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -153,11 +161,7 @@ def main():
 
     
     print(f"\nScanning MIMII files for machine='{args.machine}' under {args.data_root} ...")
-    normal_files, abnormal_files = find_mimii_files(
-        args.data_root,
-        args.machine,
-        args.machine_id
-    )
+    normal_files, abnormal_files = find_mimii_files(args.data_root, args.machine)
     print(f"Found {len(normal_files)} normal / {len(abnormal_files)} abnormal recordings.")
 
     rng = np.random.RandomState(42)
@@ -231,38 +235,14 @@ def main():
 
     
     print("\n================ Classification Report ================")
-
-    print(classification_report(
-        test_labels,
-        predictions,
-        target_names=["Normal (0)", "Anomalous (1)"]
-    ))
-
+    print(classification_report(test_labels, predictions, target_names=["Normal (0)", "Anomalous (1)"]))
     print("Confusion Matrix:")
-
     print(confusion_matrix(test_labels, predictions))
-
     try:
         auc = roc_auc_score(test_labels, test_losses)
         print(f"ROC-AUC (raw reconstruction error, threshold-independent): {auc:.4f}")
     except ValueError:
-        auc = None
-        print("Could not compute ROC-AUC (insufficient positive or negative samples)")
-
-    import json
-
-    results = {
-        "machine": args.machine,
-        "threshold": float(threshold),
-        "mean_validation_loss": float(mu_loss),
-        "std_validation_loss": float(sigma_loss),
-        "roc_auc": float(auc) if auc is not None else None
-    }
-
-    with open(f"results_{args.machine}.json", "w") as f:
-        json.dump(results, f, indent=4)
-
-    print(f"\nResults saved to results_{args.machine}.json")    
+        pass  # only one class present in test set
 
    
     save_path = f"autoencoder_{args.machine}.pt"
