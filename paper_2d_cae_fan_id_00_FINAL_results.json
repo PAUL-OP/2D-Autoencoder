@@ -1,0 +1,58 @@
+{
+    "machine": "fan",
+    "machine_id": "id_00",
+    "sample_rate": 16000,
+    "n_fft": 1024,
+    "hop_length": 512,
+    "n_mels": 128,
+    "window_seconds": 1.0,
+    "overlap": 0.5,
+    "batch_size": 64,
+    "epochs": 50,
+    "learning_rate": 0.001,
+    "training_normal": 514,
+    "validation_normal": 90,
+    "test_normal": 407,
+    "test_abnormal": 407,
+    "validation_mean": 0.001019712770357728,
+    "validation_std": 3.46538181474898e-05,
+    "threshold": 0.0011236742248001974,
+    "classification_report": {
+        "Normal": {
+            "precision": 0.579250720461095,
+            "recall": 0.9877149877149877,
+            "f1-score": 0.7302452316076294,
+            "support": 407.0
+        },
+        "Anomalous": {
+            "precision": 0.9583333333333334,
+            "recall": 0.28255528255528256,
+            "f1-score": 0.4364326375711575,
+            "support": 407.0
+        },
+        "accuracy": 0.6351351351351351,
+        "macro avg": {
+            "precision": 0.7687920268972142,
+            "recall": 0.6351351351351351,
+            "f1-score": 0.5833389345893935,
+            "support": 814.0
+        },
+        "weighted avg": {
+            "precision": 0.7687920268972143,
+            "recall": 0.6351351351351351,
+            "f1-score": 0.5833389345893935,
+            "support": 814.0
+        }
+    },
+    "confusion_matrix": [
+        [
+            402,
+            5
+        ],
+        [
+            292,
+            115
+        ]
+    ],
+    "roc_auc": 0.8392866844955298
+}
