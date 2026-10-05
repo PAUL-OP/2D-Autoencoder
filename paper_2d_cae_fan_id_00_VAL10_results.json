@@ -1,0 +1,60 @@
+{
+    "machine": "fan",
+    "machine_id": "id_00",
+    "sample_rate": 16000,
+    "n_fft": 1024,
+    "hop_length": 512,
+    "n_mels": 128,
+    "window_seconds": 1.0,
+    "window_overlap": 0.5,
+    "validation_fraction": 0.1,
+    "threshold_method": "mean + 3*std",
+    "validation_mean_error": 0.0008629031772949946,
+    "validation_std_error": 2.3604703658688493e-05,
+    "threshold": 0.00093371728827106,
+    "roc_auc": 0.9226919570899915,
+    "confusion_matrix": [
+        [
+            399,
+            8
+        ],
+        [
+            237,
+            170
+        ]
+    ],
+    "classification_report": {
+        "Normal": {
+            "precision": 0.6273584905660378,
+            "recall": 0.9803439803439803,
+            "f1-score": 0.7651006711409396,
+            "support": 407.0
+        },
+        "Anomalous": {
+            "precision": 0.9550561797752809,
+            "recall": 0.4176904176904177,
+            "f1-score": 0.5811965811965812,
+            "support": 407.0
+        },
+        "accuracy": 0.699017199017199,
+        "macro avg": {
+            "precision": 0.7912073351706593,
+            "recall": 0.6990171990171989,
+            "f1-score": 0.6731486261687605,
+            "support": 814.0
+        },
+        "weighted avg": {
+            "precision": 0.7912073351706593,
+            "recall": 0.699017199017199,
+            "f1-score": 0.6731486261687604,
+            "support": 814.0
+        }
+    },
+    "train_recordings": 544,
+    "validation_recordings": 60,
+    "normal_test_recordings": 407,
+    "abnormal_test_recordings": 407,
+    "epochs_requested": 80,
+    "batch_size": 64,
+    "learning_rate": 0.001
+}
