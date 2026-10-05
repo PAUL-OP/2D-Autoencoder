@@ -1,0 +1,6 @@
+Model,F1-Score,ROC-AUC
+Isolation Forest,0.96,0.9839
+MLP Autoencoder,0.12,0.6412
+1D-CNN Autoencoder,0.03,0.416
+LSTM Autoencoder,0.55,0.6812
+2D-CAE,0.01,0.4578

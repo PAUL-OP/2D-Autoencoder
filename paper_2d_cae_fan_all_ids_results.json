@@ -1,0 +1,33 @@
+{
+    "experiment": "MIMII fan all IDs",
+    "machine": "fan",
+    "machine_ids": [
+        "id_00",
+        "id_02",
+        "id_04",
+        "id_06"
+    ],
+    "sample_rate": 16000,
+    "fft": 1024,
+    "hop_length": 512,
+    "mel_bands": 128,
+    "window_seconds": 1.0,
+    "overlap": 0.5,
+    "training_files": 3464,
+    "validation_files": 611,
+    "abnormal_files": 1475,
+    "validation_mean": 0.0009302084217779338,
+    "validation_std": 7.2797920438461e-05,
+    "threshold": 0.0011486021830933169,
+    "roc_auc": 0.8228871813365142,
+    "confusion_matrix": [
+        [
+            599,
+            12
+        ],
+        [
+            1375,
+            100
+        ]
+    ]
+}

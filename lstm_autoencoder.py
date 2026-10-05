@@ -5,26 +5,92 @@ import torch.optim as optim
 
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 
-from mimii_pipeline import (
-    find_mimii_files,
-    wav_to_fixed_spec
-)
+from mimii_pipeline import find_mimii_files, wav_to_fixed_spec
 
-DATA_ROOT = "./synthetic_data"
+
+DATA_ROOT = "./mimii_data"
 MACHINE = "fan"
+MACHINE_ID = "id_00"
 
 EPOCHS = 30
 BATCH_SIZE = 8
-LR = 0.001
+LEARNING_RATE = 0.001
 
 device = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
+)
+
+print("Using device:", device)
+
+
+normal_files, abnormal_files = find_mimii_files(
+    DATA_ROOT,
+    MACHINE,
+    MACHINE_ID
+)
+
+print(
+    f"Found {len(normal_files)} normal / "
+    f"{len(abnormal_files)} abnormal recordings."
+)
+
+
+rng = np.random.RandomState(42)
+rng.shuffle(normal_files)
+
+n_val = max(
+    1,
+    int(len(normal_files) * 0.15)
+)
+
+val_files = normal_files[:n_val]
+train_files = normal_files[n_val:]
+
+
+def load_specs(files, name):
+
+    specs = []
+
+    for i, path in enumerate(files):
+
+        spec = wav_to_fixed_spec(path)
+
+        specs.append(spec)
+
+        if (i + 1) % 100 == 0 or i + 1 == len(files):
+            print(
+                f"[{name}] processed "
+                f"{i + 1}/{len(files)}"
+            )
+
+    return np.array(
+        specs,
+        dtype=np.float32
+    )
+
+
+print("\nExtracting Mel-Spectrograms...")
+
+train_specs = load_specs(
+    train_files,
+    "train"
+)
+
+val_specs = load_specs(
+    val_files,
+    "validation"
+)
+
+abnormal_specs = load_specs(
+    abnormal_files,
+    "abnormal"
 )
 
 
 class LSTMAutoencoder(nn.Module):
 
     def __init__(self):
+
         super().__init__()
 
         self.encoder = nn.LSTM(
@@ -41,85 +107,37 @@ class LSTMAutoencoder(nn.Module):
             batch_first=True
         )
 
-        self.output_layer = nn.Linear(
-            128,
-            128
+        self.output_layer = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
 
-        # x shape: (batch, 128, 128)
-        encoded, (hidden, cell) = self.encoder(x)
+        encoded, _ = self.encoder(x)
 
-        # Use the final encoded representation
-        latent = encoded[:, -1, :]
+        decoded, _ = self.decoder(encoded)
 
-        # Repeat latent vector for every time frame
-        repeated = latent.unsqueeze(1).repeat(
-            1,
-            x.size(1),
-            1
-        )
+        output = self.output_layer(decoded)
 
-        decoded, _ = self.decoder(
-            repeated
-        )
-
-        output = self.output_layer(
-            decoded
-        )
-
-        return torch.sigmoid(output)
-
-
-def load_specs(files):
-
-    specs = []
-
-    for path in files:
-        specs.append(
-            wav_to_fixed_spec(path)
-        )
-
-    return np.array(
-        specs,
-        dtype=np.float32
-    )
-
-
-normal_files, abnormal_files = find_mimii_files(
-    DATA_ROOT,
-    MACHINE
-)
-
-rng = np.random.RandomState(42)
-rng.shuffle(normal_files)
-
-n_val = max(
-    1,
-    int(len(normal_files) * 0.15)
-)
-
-val_files = normal_files[:n_val]
-train_files = normal_files[n_val:]
-
-
-print("Loading normal training data...")
-train_specs = load_specs(train_files)
-
-print("Loading validation data...")
-val_specs = load_specs(val_files)
-
-print("Loading abnormal data...")
-abnormal_specs = load_specs(
-    abnormal_files
-)
+        return output
 
 
 train_tensor = torch.tensor(
     train_specs,
     dtype=torch.float32
 )
+
+val_tensor = torch.tensor(
+    val_specs,
+    dtype=torch.float32
+)
+
+abnormal_tensor = torch.tensor(
+    abnormal_specs,
+    dtype=torch.float32
+)
+
 
 train_loader = torch.utils.data.DataLoader(
     train_tensor,
@@ -134,17 +152,20 @@ criterion = nn.MSELoss()
 
 optimizer = optim.Adam(
     model.parameters(),
-    lr=LR
+    lr=LEARNING_RATE
 )
 
 
-print("\nTraining LSTM Autoencoder...")
+print(
+    "\n================ Training LSTM Autoencoder ================"
+)
+
 
 for epoch in range(EPOCHS):
 
     model.train()
 
-    total_loss = 0
+    total_loss = 0.0
 
     for batch in train_loader:
 
@@ -163,90 +184,112 @@ for epoch in range(EPOCHS):
 
         optimizer.step()
 
-        total_loss += (
-            loss.item() * batch.size(0)
-        )
+        total_loss += loss.item()
 
-    epoch_loss = (
+    average_loss = (
         total_loss /
-        len(train_loader.dataset)
+        len(train_loader)
     )
 
     print(
         f"Epoch [{epoch + 1}/{EPOCHS}] "
-        f"- Loss: {epoch_loss:.6f}"
+        f"Loss: {average_loss:.6f}"
     )
 
 
 model.eval()
 
 
-def calculate_errors(specs):
+def reconstruction_errors(data):
 
     errors = []
 
+    loader = torch.utils.data.DataLoader(
+        data,
+        batch_size=BATCH_SIZE,
+        shuffle=False
+    )
+
     with torch.no_grad():
 
-        for spec in specs:
+        for batch in loader:
 
-            x = torch.tensor(
-                spec,
-                dtype=torch.float32
-            ).unsqueeze(0).to(device)
+            batch = batch.to(device)
 
-            reconstructed = model(x)
+            reconstructed = model(batch)
 
-            error = torch.mean(
-                (reconstructed - x) ** 2
-            ).item()
+            batch_errors = torch.mean(
+                (batch - reconstructed) ** 2,
+                dim=(1, 2)
+            )
 
-            errors.append(error)
+            errors.extend(
+                batch_errors.cpu().numpy()
+            )
 
     return np.array(errors)
 
 
-normal_errors = calculate_errors(
-    val_specs
+print(
+    "\nCalculating validation reconstruction errors..."
 )
 
-abnormal_errors = calculate_errors(
-    abnormal_specs
+val_errors = reconstruction_errors(
+    val_tensor
 )
 
 
-mu = np.mean(normal_errors)
-sigma = np.std(normal_errors)
+mu_loss = np.mean(val_errors)
 
-threshold = mu + 3 * sigma
+sigma_loss = np.std(val_errors)
+
+threshold = (
+    mu_loss +
+    3 * sigma_loss
+)
+
+
+print(
+    f"\nCalculated Anomaly Threshold "
+    f"(mu + 3*sigma): {threshold:.6f}"
+)
+
+
+print(
+    "\nCalculating abnormal reconstruction errors..."
+)
+
+abnormal_errors = reconstruction_errors(
+    abnormal_tensor
+)
 
 
 test_errors = np.concatenate(
     [
-        normal_errors,
+        val_errors,
         abnormal_errors
     ]
 )
 
-true_labels = np.array(
-    [0] * len(normal_errors) +
+
+test_labels = np.array(
+    [0] * len(val_errors) +
     [1] * len(abnormal_errors)
 )
+
 
 predictions = (
     test_errors > threshold
 ).astype(int)
 
 
-print("\n================ LSTM Autoencoder ================")
-
 print(
-    f"Threshold (mu + 3*sigma): "
-    f"{threshold:.6f}"
+    "\n================ Classification Report ================"
 )
 
 print(
     classification_report(
-        true_labels,
+        test_labels,
         predictions,
         target_names=[
             "Normal (0)",
@@ -255,19 +298,21 @@ print(
     )
 )
 
+
 print("Confusion Matrix:")
 
 print(
     confusion_matrix(
-        true_labels,
+        test_labels,
         predictions
     )
 )
 
+
 try:
 
     auc = roc_auc_score(
-        true_labels,
+        test_labels,
         test_errors
     )
 
@@ -276,13 +321,15 @@ try:
     )
 
 except ValueError:
-    pass
+
+    auc = None
 
 
 torch.save(
     model.state_dict(),
     "lstm_autoencoder.pt"
 )
+
 
 print(
     "\nModel saved to lstm_autoencoder.pt"

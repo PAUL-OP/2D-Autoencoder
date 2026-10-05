@@ -11,8 +11,9 @@ from mimii_pipeline import (
     wav_to_fixed_spec
 )
 
-DATA_ROOT = "./synthetic_data"
+DATA_ROOT = "./mimii_data"
 MACHINE = "fan"
+MACHINE_ID = "id_00"
 
 EPOCHS = 30
 BATCH_SIZE = 16
@@ -74,7 +75,8 @@ def load_specs(files):
 
 normal_files, abnormal_files = find_mimii_files(
     DATA_ROOT,
-    MACHINE
+    MACHINE,
+    MACHINE_ID
 )
 
 rng = np.random.RandomState(42)

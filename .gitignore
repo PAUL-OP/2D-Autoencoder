@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+mimii_data/
+synthetic_data/
+*.pt
+*.png

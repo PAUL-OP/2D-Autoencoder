@@ -1,0 +1,29 @@
+{
+    "machine": "fan",
+    "machine_id": "id_00",
+    "sample_rate": 16000,
+    "n_fft": 1024,
+    "hop_length": 512,
+    "n_mels": 128,
+    "window_seconds": 1.0,
+    "overlap": 0.5,
+    "evaluation_unit": "WAV recording",
+    "window_score_aggregation": "95th percentile",
+    "training_wav_files": 860,
+    "validation_wav_files": 151,
+    "abnormal_test_wav_files": 407,
+    "validation_mean_score": 0.00100304139778018,
+    "validation_std_score": 6.794235378038138e-05,
+    "threshold": 0.0012068684591213241,
+    "roc_auc": 0.8013407748507086,
+    "confusion_matrix": [
+        [
+            148,
+            3
+        ],
+        [
+            381,
+            26
+        ]
+    ]
+}

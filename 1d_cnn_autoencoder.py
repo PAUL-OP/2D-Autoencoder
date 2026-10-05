@@ -5,22 +5,44 @@ import torch.nn as nn
 import torch.optim as optim
 
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
-
 from mimii_pipeline import find_mimii_files
 
-DATA_ROOT = "./synthetic_data"
+DATA_ROOT = "./mimii_data"
 MACHINE = "fan"
+MACHINE_ID = "id_00"
 
 SR = 16000
-AUDIO_LENGTH = 16000
-
 EPOCHS = 30
-BATCH_SIZE = 16
-LR = 0.001
+BATCH_SIZE = 8
+LEARNING_RATE = 0.001
 
-device = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
-)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print("Using device:", device)
+
+
+def load_audio(path):
+    audio, _ = librosa.load(path, sr=SR)
+
+    if len(audio) < SR:
+        audio = np.pad(audio, (0, SR - len(audio)))
+
+    if len(audio) > SR:
+        audio = audio[:SR]
+
+    return audio.astype(np.float32)
+
+
+def load_files(files):
+    data = []
+
+    for i, path in enumerate(files):
+        data.append(load_audio(path))
+
+        if (i + 1) % 200 == 0 or i + 1 == len(files):
+            print(f"Processed {i + 1}/{len(files)}")
+
+    return np.array(data, dtype=np.float32)
 
 
 class CNN1DAutoencoder(nn.Module):
@@ -30,12 +52,15 @@ class CNN1DAutoencoder(nn.Module):
 
         self.encoder = nn.Sequential(
             nn.Conv1d(1, 16, kernel_size=9, stride=2, padding=4),
+            nn.BatchNorm1d(16),
             nn.ReLU(),
 
             nn.Conv1d(16, 32, kernel_size=9, stride=2, padding=4),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
 
             nn.Conv1d(32, 64, kernel_size=9, stride=2, padding=4),
+            nn.BatchNorm1d(64),
             nn.ReLU()
         )
 
@@ -47,6 +72,7 @@ class CNN1DAutoencoder(nn.Module):
                 padding=4,
                 output_padding=1
             ),
+            nn.BatchNorm1d(32),
             nn.ReLU(),
 
             nn.ConvTranspose1d(
@@ -56,6 +82,7 @@ class CNN1DAutoencoder(nn.Module):
                 padding=4,
                 output_padding=1
             ),
+            nn.BatchNorm1d(16),
             nn.ReLU(),
 
             nn.ConvTranspose1d(
@@ -69,76 +96,51 @@ class CNN1DAutoencoder(nn.Module):
         )
 
     def forward(self, x):
-
-        encoded = self.encoder(x)
-
-        decoded = self.decoder(encoded)
-
-        return decoded
-
-
-def load_audio(path):
-
-    audio, _ = librosa.load(
-        path,
-        sr=SR
-    )
-
-    if len(audio) > AUDIO_LENGTH:
-
-        audio = audio[:AUDIO_LENGTH]
-
-    elif len(audio) < AUDIO_LENGTH:
-
-        audio = np.pad(
-            audio,
-            (0, AUDIO_LENGTH - len(audio))
-        )
-
-    return audio.astype(np.float32)
-
-
-def load_dataset(files):
-
-    data = []
-
-    for path in files:
-        data.append(
-            load_audio(path)
-        )
-
-    return np.array(data, dtype=np.float32)
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
 
 
 normal_files, abnormal_files = find_mimii_files(
     DATA_ROOT,
-    MACHINE
+    MACHINE,
+    MACHINE_ID
+)
+
+print(
+    f"Found {len(normal_files)} normal / "
+    f"{len(abnormal_files)} abnormal recordings."
 )
 
 rng = np.random.RandomState(42)
 rng.shuffle(normal_files)
 
-n_val = max(
-    1,
-    int(len(normal_files) * 0.15)
-)
+n_val = max(1, int(len(normal_files) * 0.15))
 
 val_files = normal_files[:n_val]
 train_files = normal_files[n_val:]
 
+print("\nLoading training audio...")
+train_audio = load_files(train_files)
 
-print("Loading normal training audio...")
-train_audio = load_dataset(train_files)
+print("\nLoading validation audio...")
+val_audio = load_files(val_files)
 
-print("Loading validation audio...")
-val_audio = load_dataset(val_files)
-
-print("Loading abnormal audio...")
-abnormal_audio = load_dataset(abnormal_files)
-
+print("\nLoading abnormal audio...")
+abnormal_audio = load_files(abnormal_files)
 
 train_tensor = torch.tensor(
     train_audio,
+    dtype=torch.float32
+).unsqueeze(1)
+
+val_tensor = torch.tensor(
+    val_audio,
+    dtype=torch.float32
+).unsqueeze(1)
+
+abnormal_tensor = torch.tensor(
+    abnormal_audio,
     dtype=torch.float32
 ).unsqueeze(1)
 
@@ -148,24 +150,21 @@ train_loader = torch.utils.data.DataLoader(
     shuffle=True
 )
 
-
 model = CNN1DAutoencoder().to(device)
 
 criterion = nn.MSELoss()
 
 optimizer = optim.Adam(
     model.parameters(),
-    lr=LR
+    lr=LEARNING_RATE
 )
 
-
-print("\nTraining 1D-CNN Autoencoder...")
+print("\n================ Training 1D-CNN Autoencoder ================")
 
 for epoch in range(EPOCHS):
 
     model.train()
-
-    total_loss = 0
+    total_loss = 0.0
 
     for batch in train_loader:
 
@@ -181,72 +180,77 @@ for epoch in range(EPOCHS):
         )
 
         loss.backward()
-
         optimizer.step()
 
-        total_loss += (
-            loss.item() * batch.size(0)
-        )
+        total_loss += loss.item()
 
-    epoch_loss = (
-        total_loss /
-        len(train_loader.dataset)
-    )
+    average_loss = total_loss / len(train_loader)
 
     print(
         f"Epoch [{epoch + 1}/{EPOCHS}] "
-        f"- Loss: {epoch_loss:.6f}"
+        f"Loss: {average_loss:.6f}"
     )
 
 
 model.eval()
 
 
-def calculate_errors(audio_data):
+def reconstruction_errors(data):
 
     errors = []
 
+    loader = torch.utils.data.DataLoader(
+        data,
+        batch_size=BATCH_SIZE,
+        shuffle=False
+    )
+
     with torch.no_grad():
 
-        for audio in audio_data:
+        for batch in loader:
 
-            x = torch.tensor(
-                audio,
-                dtype=torch.float32
-            ).unsqueeze(0).unsqueeze(0).to(device)
+            batch = batch.to(device)
 
-            reconstructed = model(x)
+            reconstructed = model(batch)
 
-            error = torch.mean(
-                (reconstructed - x) ** 2
-            ).item()
+            batch_errors = torch.mean(
+                (batch - reconstructed) ** 2,
+                dim=(1, 2)
+            )
 
-            errors.append(error)
+            errors.extend(
+                batch_errors.cpu().numpy()
+            )
 
     return np.array(errors)
 
 
-normal_errors = calculate_errors(
-    val_audio
+print("\nCalculating validation reconstruction errors...")
+
+val_errors = reconstruction_errors(val_tensor)
+
+mu_loss = np.mean(val_errors)
+sigma_loss = np.std(val_errors)
+
+threshold = mu_loss + 3 * sigma_loss
+
+print(
+    f"\nCalculated Anomaly Threshold "
+    f"(mu + 3*sigma): {threshold:.6f}"
 )
 
-abnormal_errors = calculate_errors(
-    abnormal_audio
+print("\nCalculating test reconstruction errors...")
+
+abnormal_errors = reconstruction_errors(
+    abnormal_tensor
 )
-
-
-mu = np.mean(normal_errors)
-sigma = np.std(normal_errors)
-
-threshold = mu + 3 * sigma
-
 
 test_errors = np.concatenate(
-    [normal_errors, abnormal_errors]
+    [val_errors, abnormal_errors]
 )
 
-true_labels = np.array(
-    [0] * len(normal_errors) +
+test_labels = np.array(
+    [0] * len(val_errors) +
     [1] * len(abnormal_errors)
 )
 
@@ -254,17 +258,13 @@ predictions = (
     test_errors > threshold
 ).astype(int)
 
-
-print("\n================ 1D-CNN Autoencoder ================")
-
 print(
-    f"Threshold (mu + 3*sigma): "
-    f"{threshold:.6f}"
+    "\n================ Classification Report ================"
 )
 
 print(
     classification_report(
-        true_labels,
+        test_labels,
         predictions,
         target_names=[
             "Normal (0)",
@@ -277,7 +277,7 @@ print("Confusion Matrix:")
 
 print(
     confusion_matrix(
-        true_labels,
+        test_labels,
         predictions
     )
 )
@@ -285,7 +285,7 @@ print(
 try:
 
     auc = roc_auc_score(
-        true_labels,
+        test_labels,
         test_errors
     )
 
@@ -294,7 +294,8 @@ try:
     )
 
 except ValueError:
-    pass
+
+    auc = None
 
 
 torch.save(

@@ -5,8 +5,9 @@ from sklearn.metrics import classification_report, confusion_matrix, roc_auc_sco
 
 from mimii_pipeline import find_mimii_files
 
-DATA_ROOT = "./synthetic_data"
+DATA_ROOT = "./mimii_data"
 MACHINE = "fan"
+MACHINE_ID = "id_00"
 SR = 16000
 
 
@@ -43,7 +44,8 @@ def extract_features(path):
 
 normal_files, abnormal_files = find_mimii_files(
     DATA_ROOT,
-    MACHINE
+    MACHINE,
+    MACHINE_ID
 )
 
 rng = np.random.RandomState(42)
