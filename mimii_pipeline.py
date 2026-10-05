@@ -6,37 +6,20 @@ import json
 
 import numpy as np
 import librosa
+
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 
-
-# ============================================================
-# REPRODUCIBILITY
-# ============================================================
-
-SEED = 42
-
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
-
-
-# ============================================================
-# DEVICE
-# ============================================================
-
-DEVICE = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score
 )
 
 
 # ============================================================
-# PAPER / MIMII SETTINGS
+# CONFIGURATION
 # ============================================================
 
 SAMPLE_RATE = 16000
@@ -46,22 +29,96 @@ HOP_LENGTH = 512
 N_MELS = 128
 
 WINDOW_SECONDS = 1.0
-WINDOW_SAMPLES = SAMPLE_RATE
+WINDOW_SAMPLES = int(SAMPLE_RATE * WINDOW_SECONDS)
 
 # 50% overlap
-OVERLAP = 0.50
-STEP_SAMPLES = WINDOW_SAMPLES // 2
+WINDOW_HOP = WINDOW_SAMPLES // 2
 
-BATCH_SIZE = 64
-EPOCHS = 50
-LEARNING_RATE = 1e-3
+SEED = 42
 
-# Healthy validation set for threshold
-VAL_FRACTION = 0.15
+# CHANGED:
+# 15% -> 10%
+VAL_FRACTION = 0.10
+
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
+)
 
 
 # ============================================================
-# MEL SPECTROGRAM
+# REPRODUCIBILITY
+# ============================================================
+
+def set_seed(seed=SEED):
+
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ============================================================
+# FIND MIMII FILES
+# ============================================================
+
+def find_files(data_root, machine, machine_id=None):
+
+    base = os.path.join(
+        data_root,
+        machine
+    )
+
+    if machine_id is not None:
+
+        base = os.path.join(
+            base,
+            machine_id
+        )
+
+    normal_pattern = os.path.join(
+        base,
+        "normal",
+        "*.wav"
+    )
+
+    abnormal_pattern = os.path.join(
+        base,
+        "abnormal",
+        "*.wav"
+    )
+
+    normal_files = sorted(
+        glob.glob(normal_pattern)
+    )
+
+    abnormal_files = sorted(
+        glob.glob(abnormal_pattern)
+    )
+
+    return normal_files, abnormal_files
+
+
+def find_mimii_files(
+    data_root,
+    machine,
+    machine_id=None
+):
+
+    return find_files(
+        data_root,
+        machine,
+        machine_id
+    )
+
+
+# ============================================================
+# AUDIO -> MEL SPECTROGRAM
 # ============================================================
 
 def audio_to_mel(audio):
@@ -87,6 +144,7 @@ def audio_to_mel(audio):
         0.0
     )
 
+    # [-80, 0] -> [0, 1]
     mel_norm = (
         mel_db + 80.0
     ) / 80.0
@@ -100,30 +158,27 @@ def audio_to_mel(audio):
 # CREATE 1-SECOND OVERLAPPING WINDOWS
 # ============================================================
 
-def wav_to_windows(path):
-
-    audio, _ = librosa.load(
-        path,
-        sr=SAMPLE_RATE,
-        mono=True
-    )
+def audio_to_windows(audio):
 
     if len(audio) < WINDOW_SAMPLES:
 
-        audio = np.pad(
-            audio,
-            (
-                0,
-                WINDOW_SAMPLES - len(audio)
-            )
+        padded = np.zeros(
+            WINDOW_SAMPLES,
+            dtype=np.float32
         )
+
+        padded[:len(audio)] = audio
+
+        return [
+            audio_to_mel(padded)
+        ]
 
     windows = []
 
     for start in range(
         0,
         len(audio) - WINDOW_SAMPLES + 1,
-        STEP_SAMPLES
+        WINDOW_HOP
     ):
 
         segment = audio[
@@ -138,40 +193,96 @@ def wav_to_windows(path):
             mel
         )
 
+    # Include final region
+    last_start = (
+        len(audio) - WINDOW_SAMPLES
+    )
+
+    if len(windows) == 0 or (
+        last_start
+        - (
+            (len(windows) - 1)
+            * WINDOW_HOP
+        )
+        > 0
+    ):
+
+        segment = audio[
+            last_start:
+            last_start + WINDOW_SAMPLES
+        ]
+
+        mel = audio_to_mel(
+            segment
+        )
+
+        windows.append(
+            mel
+        )
+
     return windows
+
+
+# ============================================================
+# RECORDING -> SPECTROGRAM WINDOWS
+# ============================================================
+
+def recording_to_windows(path):
+
+    audio, _ = librosa.load(
+        path,
+        sr=SAMPLE_RATE,
+        mono=True
+    )
+
+    windows = audio_to_windows(
+        audio
+    )
+
+    return np.stack(
+        windows
+    )
 
 
 # ============================================================
 # DATASET
 # ============================================================
 
-class MelDataset(Dataset):
+class MelWindowDataset(Dataset):
 
     def __init__(self, files):
+
+        self.files = files
 
         self.samples = []
 
         print(
-            "\nPreparing training spectrograms..."
+            f"Preparing dataset from "
+            f"{len(files)} recordings..."
         )
 
-        for i, path in enumerate(files):
+        for index, path in enumerate(
+            files
+        ):
 
-            windows = wav_to_windows(
+            windows = recording_to_windows(
                 path
             )
 
-            for mel in windows:
+            for window in windows:
 
                 self.samples.append(
-                    mel
+                    window
                 )
 
-            if (i + 1) % 100 == 0:
+            if (
+                index + 1
+            ) % 100 == 0:
 
                 print(
                     f"Processed "
-                    f"{i + 1}/{len(files)} recordings"
+                    f"{index + 1}/"
+                    f"{len(files)} recordings"
                 )
 
         print(
@@ -181,21 +292,18 @@ class MelDataset(Dataset):
 
     def __len__(self):
 
-        return len(
-            self.samples
-        )
+        return len(self.samples)
 
     def __getitem__(self, index):
 
+        x = self.samples[index]
+
         x = torch.tensor(
-            self.samples[index],
+            x,
             dtype=torch.float32
         )
 
-        # [128, time]
-        # ->
-        # [1, 128, time]
-
+        # [128, time] -> [1, 128, time]
         x = x.unsqueeze(0)
 
         return x
@@ -219,23 +327,6 @@ class ConvAutoencoder(nn.Module):
 
             nn.Conv2d(
                 1,
-                16,
-                kernel_size=3,
-                padding=1
-            ),
-
-            nn.BatchNorm2d(16),
-
-            nn.ReLU(),
-
-            nn.MaxPool2d(
-                kernel_size=2,
-                stride=2
-            ),
-
-
-            nn.Conv2d(
-                16,
                 32,
                 kernel_size=3,
                 padding=1
@@ -243,13 +334,14 @@ class ConvAutoencoder(nn.Module):
 
             nn.BatchNorm2d(32),
 
-            nn.ReLU(),
+            nn.ReLU(
+                inplace=True
+            ),
 
             nn.MaxPool2d(
                 kernel_size=2,
                 stride=2
             ),
-
 
             nn.Conv2d(
                 32,
@@ -260,7 +352,27 @@ class ConvAutoencoder(nn.Module):
 
             nn.BatchNorm2d(64),
 
-            nn.ReLU(),
+            nn.ReLU(
+                inplace=True
+            ),
+
+            nn.MaxPool2d(
+                kernel_size=2,
+                stride=2
+            ),
+
+            nn.Conv2d(
+                64,
+                128,
+                kernel_size=3,
+                padding=1
+            ),
+
+            nn.BatchNorm2d(128),
+
+            nn.ReLU(
+                inplace=True
+            ),
 
             nn.MaxPool2d(
                 kernel_size=2,
@@ -268,12 +380,24 @@ class ConvAutoencoder(nn.Module):
             )
         )
 
-
         # ----------------------------------------------------
         # DECODER
         # ----------------------------------------------------
 
         self.decoder = nn.Sequential(
+
+            nn.ConvTranspose2d(
+                128,
+                64,
+                kernel_size=2,
+                stride=2
+            ),
+
+            nn.BatchNorm2d(64),
+
+            nn.ReLU(
+                inplace=True
+            ),
 
             nn.ConvTranspose2d(
                 64,
@@ -284,97 +408,31 @@ class ConvAutoencoder(nn.Module):
 
             nn.BatchNorm2d(32),
 
-            nn.ReLU(),
-
+            nn.ReLU(
+                inplace=True
+            ),
 
             nn.ConvTranspose2d(
                 32,
-                16,
-                kernel_size=2,
-                stride=2
-            ),
-
-            nn.BatchNorm2d(16),
-
-            nn.ReLU(),
-
-
-            nn.ConvTranspose2d(
-                16,
                 1,
                 kernel_size=2,
                 stride=2
-            ),
-
-            nn.Sigmoid()
+            )
         )
-
 
     def forward(self, x):
 
-        encoded = self.encoder(
-            x
-        )
+        encoded = self.encoder(x)
 
-        decoded = self.decoder(
+        reconstructed = self.decoder(
             encoded
         )
 
-        return decoded
+        return reconstructed
 
 
 # ============================================================
-# FIND MIMII FILES
-# ============================================================
-
-def find_files(
-    data_root,
-    machine,
-    machine_id
-):
-
-    base = os.path.join(
-        data_root,
-        machine,
-        machine_id
-    )
-
-    normal_dir = os.path.join(
-        base,
-        "normal"
-    )
-
-    abnormal_dir = os.path.join(
-        base,
-        "abnormal"
-    )
-
-    normal_files = sorted(
-        glob.glob(
-            os.path.join(
-                normal_dir,
-                "*.wav"
-            )
-        )
-    )
-
-    abnormal_files = sorted(
-        glob.glob(
-            os.path.join(
-                abnormal_dir,
-                "*.wav"
-            )
-        )
-    )
-
-    return (
-        normal_files,
-        abnormal_files
-    )
-
-
-# ============================================================
-# RECORDING RECONSTRUCTION ERROR
+# RECORDING-LEVEL RECONSTRUCTION ERROR
 # ============================================================
 
 def recording_error(
@@ -382,44 +440,38 @@ def recording_error(
     path
 ):
 
-    windows = wav_to_windows(
+    model.eval()
+
+    windows = recording_to_windows(
         path
     )
 
     errors = []
 
-    model.eval()
-
     with torch.no_grad():
 
-        for mel in windows:
+        for window in windows:
 
             x = torch.tensor(
-                mel,
-                dtype=torch.float32
+                window,
+                dtype=torch.float32,
+                device=DEVICE
             )
 
             x = x.unsqueeze(0)
             x = x.unsqueeze(0)
 
-            x = x.to(
-                DEVICE
-            )
-
-            reconstructed = model(
-                x
-            )
+            reconstruction = model(x)
 
             error = torch.mean(
-                (x - reconstructed) ** 2
+                (
+                    reconstruction - x
+                ) ** 2
             ).item()
 
             errors.append(
                 error
             )
-
-    # Average reconstruction error
-    # over the entire recording.
 
     return float(
         np.mean(errors)
@@ -427,42 +479,171 @@ def recording_error(
 
 
 # ============================================================
-# CALCULATE ERRORS FOR FILES
+# TRAIN MODEL
 # ============================================================
 
-def calculate_errors(
+def train_model(
     model,
-    files,
-    description
+    train_loader,
+    val_files,
+    epochs,
+    learning_rate
 ):
 
-    errors = []
+    criterion = nn.MSELoss()
 
-    print(
-        f"\n{description}"
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=learning_rate
     )
 
-    for i, path in enumerate(files):
-
-        error = recording_error(
-            model,
-            path
+    scheduler = (
+        torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=5
         )
+    )
 
-        errors.append(
-            error
-        )
+    best_val_loss = float("inf")
 
-        if (i + 1) % 50 == 0:
+    best_state = None
 
-            print(
-                f"{i + 1}/{len(files)}"
+    patience = 12
+
+    epochs_without_improvement = 0
+
+    for epoch in range(
+        1,
+        epochs + 1
+    ):
+
+        model.train()
+
+        running_loss = 0.0
+
+        for batch in train_loader:
+
+            batch = batch.to(
+                DEVICE,
+                non_blocking=True
             )
 
-    return np.array(
-        errors,
-        dtype=np.float32
-    )
+            optimizer.zero_grad()
+
+            reconstruction = model(
+                batch
+            )
+
+            loss = criterion(
+                reconstruction,
+                batch
+            )
+
+            loss.backward()
+
+            optimizer.step()
+
+            running_loss += (
+                loss.item()
+                * batch.size(0)
+            )
+
+        train_loss = (
+            running_loss
+            / len(train_loader.dataset)
+        )
+
+        # ----------------------------------------------------
+        # VALIDATION
+        # ----------------------------------------------------
+
+        model.eval()
+
+        validation_errors = []
+
+        with torch.no_grad():
+
+            for path in val_files:
+
+                error = recording_error(
+                    model,
+                    path
+                )
+
+                validation_errors.append(
+                    error
+                )
+
+        val_loss = float(
+            np.mean(
+                validation_errors
+            )
+        )
+
+        scheduler.step(
+            val_loss
+        )
+
+        current_lr = (
+            optimizer
+            .param_groups[0]["lr"]
+        )
+
+        print(
+            f"Epoch "
+            f"{epoch:03d}/{epochs} | "
+            f"Train Loss: "
+            f"{train_loss:.8f} | "
+            f"Val Loss: "
+            f"{val_loss:.8f} | "
+            f"LR: "
+            f"{current_lr:.2e}"
+        )
+
+        # ----------------------------------------------------
+        # SAVE BEST MODEL
+        # ----------------------------------------------------
+
+        if val_loss < best_val_loss:
+
+            best_val_loss = val_loss
+
+            best_state = {
+                key:
+                value.detach()
+                .cpu()
+                .clone()
+                for key, value
+                in model.state_dict()
+                .items()
+            }
+
+            epochs_without_improvement = 0
+
+        else:
+
+            epochs_without_improvement += 1
+
+        if (
+            epochs_without_improvement
+            >= patience
+        ):
+
+            print(
+                "\nEarly stopping."
+            )
+
+            break
+
+    if best_state is not None:
+
+        model.load_state_dict(
+            best_state
+        )
+
+    return model
 
 
 # ============================================================
@@ -476,7 +657,7 @@ def main():
     parser.add_argument(
         "--data_root",
         type=str,
-        default="mimii_data"
+        default="./mimii_data"
     )
 
     parser.add_argument(
@@ -491,77 +672,47 @@ def main():
         default="id_00"
     )
 
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=80
+    )
+
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=64
+    )
+
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-3
+    )
+
     args = parser.parse_args()
 
+    set_seed()
+
+    print("=" * 70)
+    print("2D CONVOLUTIONAL AUTOENCODER")
+    print("MIMII ANOMALY DETECTION")
+    print("=" * 70)
 
     print(
-        "\n"
-        + "=" * 70
+        f"Device: {DEVICE}"
     )
 
     print(
-        "FINAL MIMII 2D-CAE PIPELINE"
+        f"Machine: {args.machine}"
     )
 
     print(
-        "=" * 70
+        f"Machine ID: {args.machine_id}"
     )
-
-    print(
-        f"Device       : {DEVICE}"
-    )
-
-    print(
-        f"Machine      : {args.machine}"
-    )
-
-    print(
-        f"Machine ID   : {args.machine_id}"
-    )
-
-    print(
-        f"Sample rate  : {SAMPLE_RATE}"
-    )
-
-    print(
-        f"FFT          : {N_FFT}"
-    )
-
-    print(
-        f"Hop length   : {HOP_LENGTH}"
-    )
-
-    print(
-        f"Mel bands    : {N_MELS}"
-    )
-
-    print(
-        f"Window       : 1 second"
-    )
-
-    print(
-        f"Overlap      : 50%"
-    )
-
-    print(
-        f"Batch size   : {BATCH_SIZE}"
-    )
-
-    print(
-        f"Epochs       : {EPOCHS}"
-    )
-
-    print(
-        f"Learning rate: {LEARNING_RATE}"
-    )
-
-    print(
-        "=" * 70
-    )
-
 
     # ========================================================
-    # LOAD FILES
+    # FIND FILES
     # ========================================================
 
     normal_files, abnormal_files = find_files(
@@ -570,65 +721,69 @@ def main():
         args.machine_id
     )
 
+    print()
+
     print(
-        f"\nNormal recordings   : "
+        f"Normal recordings: "
         f"{len(normal_files)}"
     )
 
     print(
-        f"Abnormal recordings : "
+        f"Abnormal recordings: "
         f"{len(abnormal_files)}"
     )
 
-
-    if not normal_files:
+    if len(normal_files) == 0:
 
         raise RuntimeError(
             "No normal WAV files found."
         )
 
-    if not abnormal_files:
+    if len(abnormal_files) == 0:
 
         raise RuntimeError(
             "No abnormal WAV files found."
         )
 
-
     # ========================================================
-    # MIMII TEST SPLIT
+    # RECORDING-LEVEL SPLIT
     # ========================================================
 
-    random.seed(SEED)
+    rng = np.random.default_rng(
+        SEED
+    )
 
-    shuffled_normal = normal_files.copy()
+    shuffled_normal = list(
+        normal_files
+    )
 
-    random.shuffle(
+    rng.shuffle(
         shuffled_normal
     )
 
-    test_normal_count = min(
+    number_normal_test = min(
         len(abnormal_files),
-        len(shuffled_normal)
+        len(shuffled_normal) // 2
     )
 
-    test_normal_files = shuffled_normal[
-        :test_normal_count
-    ]
-
-    remaining_normal = shuffled_normal[
-        test_normal_count:
-    ]
-
-
-    # ========================================================
-    # TRAIN / VALIDATION
-    # ========================================================
-
-    random.shuffle(
-        remaining_normal
+    normal_test_files = (
+        shuffled_normal[
+            :number_normal_test
+        ]
     )
 
-    val_count = max(
+    remaining_normal = (
+        shuffled_normal[
+            number_normal_test:
+        ]
+    )
+
+    # ========================================================
+    # CHANGED:
+    # VALIDATION = 10% OF REMAINING NORMAL
+    # ========================================================
+
+    number_validation = max(
         1,
         int(
             len(remaining_normal)
@@ -636,341 +791,303 @@ def main():
         )
     )
 
-    val_files = remaining_normal[
-        :val_count
-    ]
-
-    train_files = remaining_normal[
-        val_count:
-    ]
-
-
-    print(
-        "\n"
-        + "=" * 70
+    validation_files = (
+        remaining_normal[
+            :number_validation
+        ]
     )
 
-    print(
-        "DATA SPLIT"
+    train_files = (
+        remaining_normal[
+            number_validation:
+        ]
     )
 
-    print(
-        "=" * 70
-    )
+    print()
+    print("=" * 70)
+    print("DATA SPLIT")
+    print("=" * 70)
 
     print(
-        f"Training normal     : "
+        f"Training normal recordings: "
         f"{len(train_files)}"
     )
 
     print(
-        f"Validation normal   : "
-        f"{len(val_files)}"
+        f"Validation normal recordings: "
+        f"{len(validation_files)}"
     )
 
     print(
-        f"Test normal         : "
-        f"{len(test_normal_files)}"
+        f"Normal test recordings: "
+        f"{len(normal_test_files)}"
     )
 
     print(
-        f"Test abnormal       : "
+        f"Abnormal test recordings: "
         f"{len(abnormal_files)}"
     )
-
 
     # ========================================================
     # TRAINING DATASET
     # ========================================================
 
-    train_dataset = MelDataset(
+    print()
+    print("=" * 70)
+    print("BUILDING TRAINING DATASET")
+    print("=" * 70)
+
+    train_dataset = MelWindowDataset(
         train_files
     )
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=args.batch,
         shuffle=True,
-        num_workers=0
+        num_workers=0,
+        pin_memory=torch.cuda.is_available()
     )
-
 
     # ========================================================
     # MODEL
     # ========================================================
 
+    print()
+    print("=" * 70)
+    print("BUILDING 2D-CAE")
+    print("=" * 70)
+
     model = ConvAutoencoder().to(
         DEVICE
     )
 
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=LEARNING_RATE
-    )
-
-    criterion = nn.MSELoss()
-
+    print(model)
 
     # ========================================================
-    # TRAINING
+    # TRAIN
     # ========================================================
 
-    print(
-        "\n"
-        + "=" * 70
+    print()
+    print("=" * 70)
+    print("TRAINING")
+    print("=" * 70)
+
+    model = train_model(
+        model=model,
+        train_loader=train_loader,
+        val_files=validation_files,
+        epochs=args.epochs,
+        learning_rate=args.lr
     )
 
-    print(
-        "TRAINING"
-    )
+    # ========================================================
+    # VALIDATION ERRORS
+    # ========================================================
 
-    print(
-        "=" * 70
-    )
+    print()
+    print("=" * 70)
+    print("CALCULATING VALIDATION ERRORS")
+    print("=" * 70)
 
+    validation_errors = []
 
-    for epoch in range(
-        1,
-        EPOCHS + 1
+    for index, path in enumerate(
+        validation_files
     ):
 
-        model.train()
-
-        total_loss = 0.0
-
-        for batch in train_loader:
-
-            batch = batch.to(
-                DEVICE
-            )
-
-            optimizer.zero_grad()
-
-            reconstructed = model(
-                batch
-            )
-
-            loss = criterion(
-                reconstructed,
-                batch
-            )
-
-            loss.backward()
-
-            optimizer.step()
-
-            total_loss += (
-                loss.item()
-                * batch.size(0)
-            )
-
-        epoch_loss = (
-            total_loss
-            / len(train_dataset)
+        error = recording_error(
+            model,
+            path
         )
 
-        print(
-            f"Epoch "
-            f"{epoch:02d}/{EPOCHS} "
-            f"| Loss = "
-            f"{epoch_loss:.8f}"
+        validation_errors.append(
+            error
         )
 
+        if (
+            index + 1
+        ) % 50 == 0:
 
-    # ========================================================
-    # VALIDATION
-    # ========================================================
+            print(
+                f"Validation: "
+                f"{index + 1}/"
+                f"{len(validation_files)}"
+            )
 
-    validation_errors = calculate_errors(
-        model,
-        val_files,
-        "VALIDATION"
+    validation_errors = np.array(
+        validation_errors
     )
 
-
-    # ========================================================
-    # MU + 3 SIGMA THRESHOLD
-    # ========================================================
-
-    mean_loss = float(
+    mean_error = float(
         np.mean(
             validation_errors
         )
     )
 
-    std_loss = float(
+    std_error = float(
         np.std(
             validation_errors
         )
     )
 
     threshold = (
-        mean_loss
-        + 3.0 * std_loss
+        mean_error
+        + 3.0 * std_error
     )
 
+    print()
 
     print(
-        "\n"
-        + "=" * 70
-    )
-
-    print(
-        "THRESHOLD"
+        f"Validation mean MSE: "
+        f"{mean_error:.8f}"
     )
 
     print(
-        "=" * 70
+        f"Validation std MSE: "
+        f"{std_error:.8f}"
     )
 
     print(
-        f"Mean       : "
-        f"{mean_loss:.8f}"
-    )
-
-    print(
-        f"Std        : "
-        f"{std_loss:.8f}"
-    )
-
-    print(
-        f"Threshold  : "
+        f"Anomaly threshold "
+        f"(μ + 3σ): "
         f"{threshold:.8f}"
     )
-
 
     # ========================================================
     # TEST
     # ========================================================
 
-    normal_test_errors = calculate_errors(
-        model,
-        test_normal_files,
-        "NORMAL TEST"
+    print()
+    print("=" * 70)
+    print("TESTING")
+    print("=" * 70)
+
+    test_files = (
+        normal_test_files
+        + abnormal_files
     )
 
-    abnormal_test_errors = calculate_errors(
-        model,
-        abnormal_files,
-        "ABNORMAL TEST"
+    true_labels = (
+        [0] * len(normal_test_files)
+        + [1] * len(abnormal_files)
     )
 
+    test_errors = []
 
-    # ========================================================
-    # LABELS
-    # ========================================================
+    for index, path in enumerate(
+        test_files
+    ):
 
-    y_true = np.concatenate(
-        [
-            np.zeros(
-                len(normal_test_errors)
-            ),
+        error = recording_error(
+            model,
+            path
+        )
 
-            np.ones(
-                len(abnormal_test_errors)
+        test_errors.append(
+            error
+        )
+
+        if (
+            index + 1
+        ) % 50 == 0:
+
+            print(
+                f"Testing: "
+                f"{index + 1}/"
+                f"{len(test_files)}"
             )
-        ]
+
+    test_errors = np.array(
+        test_errors
     )
 
-
-    scores = np.concatenate(
-        [
-            normal_test_errors,
-            abnormal_test_errors
-        ]
-    )
-
-
-    # ========================================================
-    # CLASSIFICATION
-    # ========================================================
-
-    y_pred = (
-        scores > threshold
+    predictions = (
+        test_errors > threshold
     ).astype(int)
-
 
     # ========================================================
     # RESULTS
     # ========================================================
 
-    print(
-        "\n"
-        + "=" * 70
-    )
+    print()
+    print("=" * 70)
+    print("FINAL RESULTS")
+    print("=" * 70)
+
+    print()
 
     print(
-        "FINAL RESULTS"
+        classification_report(
+            true_labels,
+            predictions,
+            target_names=[
+                "Normal",
+                "Anomalous"
+            ],
+            digits=4
+        )
     )
-
-    print(
-        "=" * 70
-    )
-
-    report_text = classification_report(
-        y_true,
-        y_pred,
-        target_names=[
-            "Normal",
-            "Anomalous"
-        ],
-        digits=4
-    )
-
-    print(
-        report_text
-    )
-
 
     cm = confusion_matrix(
-        y_true,
-        y_pred
+        true_labels,
+        predictions
     )
 
     print(
         "Confusion Matrix:"
     )
 
-    print(
-        cm
-    )
+    print(cm)
 
+    try:
 
-    roc_auc = roc_auc_score(
-        y_true,
-        scores
-    )
+        auc = roc_auc_score(
+            true_labels,
+            test_errors
+        )
 
-    print(
-        f"\nROC-AUC: "
-        f"{roc_auc:.4f}"
-    )
+        print()
 
+        print(
+            f"ROC-AUC: "
+            f"{auc:.4f}"
+        )
+
+    except Exception:
+
+        auc = None
 
     # ========================================================
     # SAVE MODEL
     # ========================================================
 
-    model_file = (
+    model_name = (
         f"paper_2d_cae_"
         f"{args.machine}_"
         f"{args.machine_id}_"
-        f"FINAL.pt"
+        f"VAL10.pt"
     )
 
     torch.save(
         model.state_dict(),
-        model_file
+        model_name
     )
 
+    print()
+
+    print(
+        f"Model saved to: "
+        f"{model_name}"
+    )
 
     # ========================================================
-    # SAVE JSON
+    # SAVE RESULTS
     # ========================================================
 
-    report_dict = classification_report(
-        y_true,
-        y_pred,
+    report = classification_report(
+        true_labels,
+        predictions,
         target_names=[
             "Normal",
             "Anomalous"
@@ -980,80 +1097,70 @@ def main():
 
     results = {
 
-        "machine":
-            args.machine,
+        "machine": args.machine,
 
-        "machine_id":
-            args.machine_id,
+        "machine_id": args.machine_id,
 
-        "sample_rate":
-            SAMPLE_RATE,
+        "sample_rate": SAMPLE_RATE,
 
-        "n_fft":
-            N_FFT,
+        "n_fft": N_FFT,
 
-        "hop_length":
-            HOP_LENGTH,
+        "hop_length": HOP_LENGTH,
 
-        "n_mels":
-            N_MELS,
+        "n_mels": N_MELS,
 
-        "window_seconds":
-            WINDOW_SECONDS,
+        "window_seconds": WINDOW_SECONDS,
 
-        "overlap":
-            OVERLAP,
+        "window_overlap": 0.50,
 
-        "batch_size":
-            BATCH_SIZE,
+        "validation_fraction": VAL_FRACTION,
 
-        "epochs":
-            EPOCHS,
+        "threshold_method": "mean + 3*std",
 
-        "learning_rate":
-            LEARNING_RATE,
+        "validation_mean_error": mean_error,
 
-        "training_normal":
-            len(train_files),
+        "validation_std_error": std_error,
 
-        "validation_normal":
-            len(val_files),
+        "threshold": threshold,
 
-        "test_normal":
-            len(test_normal_files),
+        "roc_auc": auc,
 
-        "test_abnormal":
-            len(abnormal_files),
+        "confusion_matrix": cm.tolist(),
 
-        "validation_mean":
-            mean_loss,
+        "classification_report": report,
 
-        "validation_std":
-            std_loss,
+        "train_recordings": len(
+            train_files
+        ),
 
-        "threshold":
-            threshold,
+        "validation_recordings": len(
+            validation_files
+        ),
 
-        "classification_report":
-            report_dict,
+        "normal_test_recordings": len(
+            normal_test_files
+        ),
 
-        "confusion_matrix":
-            cm.tolist(),
+        "abnormal_test_recordings": len(
+            abnormal_files
+        ),
 
-        "roc_auc":
-            float(roc_auc)
+        "epochs_requested": args.epochs,
+
+        "batch_size": args.batch,
+
+        "learning_rate": args.lr
     }
 
-
-    results_file = (
+    result_name = (
         f"paper_2d_cae_"
         f"{args.machine}_"
         f"{args.machine_id}_"
-        f"FINAL_results.json"
+        f"VAL10_results.json"
     )
 
     with open(
-        results_file,
+        result_name,
         "w"
     ) as f:
 
@@ -1063,36 +1170,20 @@ def main():
             indent=4
         )
 
-
-    # ========================================================
-    # FINISHED
-    # ========================================================
-
     print(
-        "\n"
-        + "=" * 70
+        f"Results saved to: "
+        f"{result_name}"
     )
 
-    print(
-        "SAVED"
-    )
+    print()
+    print("=" * 70)
+    print("EXPERIMENT COMPLETE")
+    print("=" * 70)
 
-    print(
-        "=" * 70
-    )
 
-    print(
-        f"Model   : {model_file}"
-    )
-
-    print(
-        f"Results : {results_file}"
-    )
-
-    print(
-        "\nFINAL RUN COMPLETE."
-    )
-
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
 
