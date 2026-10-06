@@ -1,0 +1,62 @@
+{
+    "machine": "fan",
+    "machine_id": "id_00",
+    "sample_rate": 16000,
+    "n_fft": 1024,
+    "hop_length": 512,
+    "n_mels": 128,
+    "window_seconds": 1.0,
+    "window_overlap": 0.5,
+    "validation_fraction": 0.15,
+    "training_loss": "MSE + 0.20 * time_frequency_gradient_L1",
+    "anomaly_score": "recording_mean_window_MSE",
+    "threshold_method": "mean + 3*std",
+    "validation_mean_error": 0.0008205054666879666,
+    "validation_std_error": 2.7092230915198164e-05,
+    "threshold": 0.0009017821594335611,
+    "roc_auc": 0.9471895393271315,
+    "confusion_matrix": [
+        [
+            393,
+            14
+        ],
+        [
+            189,
+            218
+        ]
+    ],
+    "classification_report": {
+        "Normal": {
+            "precision": 0.6752577319587629,
+            "recall": 0.9656019656019657,
+            "f1-score": 0.7947421638018201,
+            "support": 407.0
+        },
+        "Anomalous": {
+            "precision": 0.9396551724137931,
+            "recall": 0.5356265356265356,
+            "f1-score": 0.6823161189358372,
+            "support": 407.0
+        },
+        "accuracy": 0.7506142506142506,
+        "macro avg": {
+            "precision": 0.807456452186278,
+            "recall": 0.7506142506142506,
+            "f1-score": 0.7385291413688286,
+            "support": 814.0
+        },
+        "weighted avg": {
+            "precision": 0.807456452186278,
+            "recall": 0.7506142506142506,
+            "f1-score": 0.7385291413688286,
+            "support": 814.0
+        }
+    },
+    "train_recordings": 514,
+    "validation_recordings": 90,
+    "normal_test_recordings": 407,
+    "abnormal_test_recordings": 407,
+    "epochs_requested": 80,
+    "batch_size": 64,
+    "learning_rate": 0.001
+}

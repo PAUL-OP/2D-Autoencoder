@@ -29,16 +29,17 @@ HOP_LENGTH = 512
 N_MELS = 128
 
 WINDOW_SECONDS = 1.0
-WINDOW_SAMPLES = int(SAMPLE_RATE * WINDOW_SECONDS)
+WINDOW_SAMPLES = int(
+    SAMPLE_RATE * WINDOW_SECONDS
+)
 
 # 50% overlap
 WINDOW_HOP = WINDOW_SAMPLES // 2
 
 SEED = 42
 
-# CHANGED:
-# 15% -> 10%
-VAL_FRACTION = 0.10
+# Return to the successful 15% split
+VAL_FRACTION = 0.15
 
 DEVICE = torch.device(
     "cuda" if torch.cuda.is_available() else "cpu"
@@ -67,7 +68,11 @@ def set_seed(seed=SEED):
 # FIND MIMII FILES
 # ============================================================
 
-def find_files(data_root, machine, machine_id=None):
+def find_files(
+    data_root,
+    machine,
+    machine_id=None
+):
 
     base = os.path.join(
         data_root,
@@ -81,24 +86,24 @@ def find_files(data_root, machine, machine_id=None):
             machine_id
         )
 
-    normal_pattern = os.path.join(
-        base,
-        "normal",
-        "*.wav"
-    )
-
-    abnormal_pattern = os.path.join(
-        base,
-        "abnormal",
-        "*.wav"
-    )
-
     normal_files = sorted(
-        glob.glob(normal_pattern)
+        glob.glob(
+            os.path.join(
+                base,
+                "normal",
+                "*.wav"
+            )
+        )
     )
 
     abnormal_files = sorted(
-        glob.glob(abnormal_pattern)
+        glob.glob(
+            os.path.join(
+                base,
+                "abnormal",
+                "*.wav"
+            )
+        )
     )
 
     return normal_files, abnormal_files
@@ -155,7 +160,7 @@ def audio_to_mel(audio):
 
 
 # ============================================================
-# CREATE 1-SECOND OVERLAPPING WINDOWS
+# 1-SECOND OVERLAPPING WINDOWS
 # ============================================================
 
 def audio_to_windows(audio):
@@ -182,15 +187,12 @@ def audio_to_windows(audio):
     ):
 
         segment = audio[
-            start:start + WINDOW_SAMPLES
+            start:
+            start + WINDOW_SAMPLES
         ]
 
-        mel = audio_to_mel(
-            segment
-        )
-
         windows.append(
-            mel
+            audio_to_mel(segment)
         )
 
     # Include final region
@@ -199,8 +201,8 @@ def audio_to_windows(audio):
     )
 
     if len(windows) == 0 or (
-        last_start
-        - (
+        last_start -
+        (
             (len(windows) - 1)
             * WINDOW_HOP
         )
@@ -212,19 +214,15 @@ def audio_to_windows(audio):
             last_start + WINDOW_SAMPLES
         ]
 
-        mel = audio_to_mel(
-            segment
-        )
-
         windows.append(
-            mel
+            audio_to_mel(segment)
         )
 
     return windows
 
 
 # ============================================================
-# RECORDING -> SPECTROGRAM WINDOWS
+# RECORDING -> WINDOWS
 # ============================================================
 
 def recording_to_windows(path):
@@ -253,7 +251,6 @@ class MelWindowDataset(Dataset):
     def __init__(self, files):
 
         self.files = files
-
         self.samples = []
 
         print(
@@ -261,9 +258,7 @@ class MelWindowDataset(Dataset):
             f"{len(files)} recordings..."
         )
 
-        for index, path in enumerate(
-            files
-        ):
+        for index, path in enumerate(files):
 
             windows = recording_to_windows(
                 path
@@ -296,17 +291,16 @@ class MelWindowDataset(Dataset):
 
     def __getitem__(self, index):
 
-        x = self.samples[index]
-
         x = torch.tensor(
-            x,
+            self.samples[index],
             dtype=torch.float32
         )
 
-        # [128, time] -> [1, 128, time]
-        x = x.unsqueeze(0)
+        # [128, time]
+        # ->
+        # [1, 128, time]
 
-        return x
+        return x.unsqueeze(0)
 
 
 # ============================================================
@@ -432,6 +426,92 @@ class ConvAutoencoder(nn.Module):
 
 
 # ============================================================
+# COMPOSITE RECONSTRUCTION LOSS
+# ============================================================
+
+def reconstruction_loss(
+    reconstruction,
+    target
+):
+
+    # --------------------------------------------------------
+    # 1. Standard reconstruction error
+    # --------------------------------------------------------
+
+    mse_loss = torch.mean(
+        (
+            reconstruction - target
+        ) ** 2
+    )
+
+    # --------------------------------------------------------
+    # 2. Frequency-direction gradient
+    #
+    # Difference between neighbouring Mel-frequency bins.
+    # --------------------------------------------------------
+
+    target_freq = (
+        target[:, :, 1:, :]
+        - target[:, :, :-1, :]
+    )
+
+    reconstruction_freq = (
+        reconstruction[:, :, 1:, :]
+        - reconstruction[:, :, :-1, :]
+    )
+
+    frequency_loss = torch.mean(
+        torch.abs(
+            reconstruction_freq
+            - target_freq
+        )
+    )
+
+    # --------------------------------------------------------
+    # 3. Time-direction gradient
+    #
+    # Difference between neighbouring time frames.
+    # --------------------------------------------------------
+
+    target_time = (
+        target[:, :, :, 1:]
+        - target[:, :, :, :-1]
+    )
+
+    reconstruction_time = (
+        reconstruction[:, :, :, 1:]
+        - reconstruction[:, :, :, :-1]
+    )
+
+    time_loss = torch.mean(
+        torch.abs(
+            reconstruction_time
+            - target_time
+        )
+    )
+
+    gradient_loss = (
+        frequency_loss
+        + time_loss
+    )
+
+    # --------------------------------------------------------
+    # Composite objective
+    #
+    # MSE remains dominant.
+    # Gradient component encourages preservation
+    # of local time-frequency structure.
+    # --------------------------------------------------------
+
+    total_loss = (
+        mse_loss
+        + 0.20 * gradient_loss
+    )
+
+    return total_loss
+
+
+# ============================================================
 # RECORDING-LEVEL RECONSTRUCTION ERROR
 # ============================================================
 
@@ -463,6 +543,12 @@ def recording_error(
 
             reconstruction = model(x)
 
+            # IMPORTANT:
+            # anomaly score remains standard MSE.
+            #
+            # We do NOT use the composite training loss
+            # as the anomaly score.
+
             error = torch.mean(
                 (
                     reconstruction - x
@@ -489,8 +575,6 @@ def train_model(
     epochs,
     learning_rate
 ):
-
-    criterion = nn.MSELoss()
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -536,7 +620,7 @@ def train_model(
                 batch
             )
 
-            loss = criterion(
+            loss = reconstruction_loss(
                 reconstruction,
                 batch
             )
@@ -557,24 +641,25 @@ def train_model(
 
         # ----------------------------------------------------
         # VALIDATION
+        #
+        # Validation remains MSE because the final anomaly
+        # score is also MSE.
         # ----------------------------------------------------
 
         model.eval()
 
         validation_errors = []
 
-        with torch.no_grad():
+        for path in val_files:
 
-            for path in val_files:
+            error = recording_error(
+                model,
+                path
+            )
 
-                error = recording_error(
-                    model,
-                    path
-                )
-
-                validation_errors.append(
-                    error
-                )
+            validation_errors.append(
+                error
+            )
 
         val_loss = float(
             np.mean(
@@ -596,14 +681,14 @@ def train_model(
             f"{epoch:03d}/{epochs} | "
             f"Train Loss: "
             f"{train_loss:.8f} | "
-            f"Val Loss: "
+            f"Val MSE: "
             f"{val_loss:.8f} | "
             f"LR: "
             f"{current_lr:.2e}"
         )
 
         # ----------------------------------------------------
-        # SAVE BEST MODEL
+        # BEST MODEL
         # ----------------------------------------------------
 
         if val_loss < best_val_loss:
@@ -697,6 +782,7 @@ def main():
     print("=" * 70)
     print("2D CONVOLUTIONAL AUTOENCODER")
     print("MIMII ANOMALY DETECTION")
+    print("COMPOSITE MSE + TIME/FREQUENCY GRADIENT LOSS")
     print("=" * 70)
 
     print(
@@ -777,11 +863,6 @@ def main():
             number_normal_test:
         ]
     )
-
-    # ========================================================
-    # CHANGED:
-    # VALIDATION = 10% OF REMAINING NORMAL
-    # ========================================================
 
     number_validation = max(
         1,
@@ -1066,7 +1147,7 @@ def main():
         f"paper_2d_cae_"
         f"{args.machine}_"
         f"{args.machine_id}_"
-        f"VAL10.pt"
+        f"GRADIENT.pt"
     )
 
     torch.save(
@@ -1115,48 +1196,60 @@ def main():
 
         "validation_fraction": VAL_FRACTION,
 
-        "threshold_method": "mean + 3*std",
+        "training_loss":
+            "MSE + 0.20 * time_frequency_gradient_L1",
 
-        "validation_mean_error": mean_error,
+        "anomaly_score":
+            "recording_mean_window_MSE",
 
-        "validation_std_error": std_error,
+        "threshold_method":
+            "mean + 3*std",
 
-        "threshold": threshold,
+        "validation_mean_error":
+            mean_error,
 
-        "roc_auc": auc,
+        "validation_std_error":
+            std_error,
 
-        "confusion_matrix": cm.tolist(),
+        "threshold":
+            threshold,
 
-        "classification_report": report,
+        "roc_auc":
+            auc,
 
-        "train_recordings": len(
-            train_files
-        ),
+        "confusion_matrix":
+            cm.tolist(),
 
-        "validation_recordings": len(
-            validation_files
-        ),
+        "classification_report":
+            report,
 
-        "normal_test_recordings": len(
-            normal_test_files
-        ),
+        "train_recordings":
+            len(train_files),
 
-        "abnormal_test_recordings": len(
-            abnormal_files
-        ),
+        "validation_recordings":
+            len(validation_files),
 
-        "epochs_requested": args.epochs,
+        "normal_test_recordings":
+            len(normal_test_files),
 
-        "batch_size": args.batch,
+        "abnormal_test_recordings":
+            len(abnormal_files),
 
-        "learning_rate": args.lr
+        "epochs_requested":
+            args.epochs,
+
+        "batch_size":
+            args.batch,
+
+        "learning_rate":
+            args.lr
     }
 
     result_name = (
         f"paper_2d_cae_"
         f"{args.machine}_"
         f"{args.machine_id}_"
-        f"VAL10_results.json"
+        f"GRADIENT_results.json"
     )
 
     with open(

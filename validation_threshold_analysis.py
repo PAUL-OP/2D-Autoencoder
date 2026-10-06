@@ -26,10 +26,10 @@ DATA_ROOT = "./mimii_data"
 MACHINE = "fan"
 MACHINE_ID = "id_00"
 
-MODEL_PATH = "paper_2d_cae_fan_id_00_NEW.pt"
+# Analyze the GRADIENT model
+MODEL_PATH = "paper_2d_cae_fan_id_00_GRADIENT.pt"
 
 
-# Multipliers for μ + kσ
 K_VALUES = [
     1.0,
     1.25,
@@ -48,7 +48,7 @@ K_VALUES = [
 
 
 # ============================================================
-# RECREATE EXACT SAME SPLIT
+# RECREATE SAME DATA SPLIT
 # ============================================================
 
 normal_files, abnormal_files = find_files(
@@ -94,7 +94,7 @@ validation_files = remaining_normal[
 # ============================================================
 
 print("=" * 70)
-print("VALIDATION-BASED THRESHOLD ANALYSIS")
+print("GRADIENT MODEL - VALIDATION THRESHOLD ANALYSIS")
 print("=" * 70)
 
 print(
@@ -191,11 +191,11 @@ print("VALIDATION STATISTICS")
 print("=" * 70)
 
 print(
-    f"μ     = {mu:.8f}"
+    f"μ      = {mu:.8f}"
 )
 
 print(
-    f"σ     = {sigma:.8f}"
+    f"σ      = {sigma:.8f}"
 )
 
 print(
@@ -292,7 +292,7 @@ true_labels = np.concatenate(
 
 
 # ============================================================
-# TEST EVERY VALIDATION-DERIVED THRESHOLD
+# TEST VALIDATION-DERIVED THRESHOLDS
 # ============================================================
 
 print()
@@ -401,7 +401,6 @@ print(
     f"{best['f1']:.4f}"
 )
 
-
 best_predictions = (
     test_errors > best["threshold"]
 ).astype(int)
@@ -422,7 +421,7 @@ print(
 
 
 # ============================================================
-# COMPARE WITH PAPER THRESHOLD
+# PAPER THRESHOLD
 # ============================================================
 
 paper_threshold = (
@@ -432,6 +431,18 @@ paper_threshold = (
 paper_predictions = (
     test_errors > paper_threshold
 ).astype(int)
+
+paper_precision = precision_score(
+    true_labels,
+    paper_predictions,
+    zero_division=0
+)
+
+paper_recall = recall_score(
+    true_labels,
+    paper_predictions,
+    zero_division=0
+)
 
 paper_f1 = f1_score(
     true_labels,
@@ -450,7 +461,17 @@ print(
 )
 
 print(
-    f"F1 with μ + 3σ: "
+    f"Precision: "
+    f"{paper_precision:.4f}"
+)
+
+print(
+    f"Recall: "
+    f"{paper_recall:.4f}"
+)
+
+print(
+    f"F1: "
     f"{paper_f1:.4f}"
 )
 
@@ -461,7 +482,7 @@ print(
 
 
 # ============================================================
-# FINAL INTERPRETATION
+# INTERPRETATION
 # ============================================================
 
 print()
@@ -476,47 +497,50 @@ if best["f1"] >= 0.90:
     )
 
     print(
-        "A threshold derived without using "
-        "test labels achieves F1 >= 0.90."
+        "The GRADIENT model reaches "
+        "F1 >= 0.90 using a threshold "
+        "derived without test labels."
+    )
+
+elif best["f1"] > 0.8717:
+
+    print(
+        "IMPROVEMENT:"
     )
 
     print(
-        "The current model is capable of "
-        "meeting the target."
+        "The GRADIENT model beats our "
+        "previous best validation-derived F1 "
+        "of 0.8717."
     )
 
 elif best["f1"] >= 0.85:
 
     print(
-        "VERY CLOSE:"
+        "CLOSE:"
     )
 
     print(
-        "The model reaches at least F1 0.85 "
-        "with a validation-derived threshold."
+        "The GRADIENT model reaches "
+        "at least F1 0.85."
     )
 
     print(
-        "A targeted model improvement may "
-        "push it above 0.90."
+        "However, it does not beat our "
+        "previous best of 0.8717."
     )
 
 else:
 
     print(
-        "MODEL IMPROVEMENT NEEDED:"
+        "NO IMPROVEMENT:"
     )
 
     print(
-        "Validation-derived thresholds do "
-        "not reach F1 0.85."
+        "The GRADIENT model does not beat "
+        "our previous best validation-derived "
+        "F1 of 0.8717."
     )
-
-    print(
-        "We should improve the model rather "
-        "than relying on threshold tuning."
-    )
-
 
 print()
 print(
@@ -524,14 +548,13 @@ print(
 )
 
 print(
-    "The test labels were NOT used to select "
-    "the threshold."
+    "The test labels were NOT used to "
+    "select the threshold."
 )
 
 print(
-    "The F1 values above are reported only "
-    "to evaluate how each validation-derived "
-    "threshold performs on the held-out test set."
+    "The threshold is derived only from "
+    "normal validation reconstruction errors."
 )
 
 print()
